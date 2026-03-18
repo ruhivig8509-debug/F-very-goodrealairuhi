@@ -46,10 +46,9 @@ def _call_llm_sync(system_prompt: str, user_message: str, max_tokens: int = 300)
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
-                max_completion_tokens=8192,
-                temperature=1,
-                top_p=1,
-                reasoning_effort="medium",
+                max_tokens=max_tokens,
+                temperature=0.85,
+                top_p=0.9,
             )
             return completion.choices[0].message.content.strip()
         except Exception as e:
