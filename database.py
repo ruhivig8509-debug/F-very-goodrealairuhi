@@ -28,62 +28,101 @@ async def init_db():
         logger.info("Database connection pool created successfully.")
 
         async with _pool.acquire() as conn:
-            # Each table in its own execute — asyncpg + Neon multi-statement issue fix
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS groups (
-                    group_id BIGINT PRIMARY KEY,
-                    group_name TEXT,
-                    initialized BOOLEAN DEFAULT FALSE,
-                    init_timestamp TIMESTAMPTZ,
-                    last_activity TIMESTAMPTZ DEFAULT NOW(),
-                    message_count INTEGER DEFAULT 0
-                )
-            """)
 
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id BIGSERIAL PRIMARY KEY,
-                    group_id BIGINT NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
-                    user_id BIGINT NOT NULL,
-                    user_name TEXT,
-                    text TEXT,
-                    timestamp TIMESTAMPTZ NOT NULL,
-                    is_self BOOLEAN DEFAULT FALSE,
-                    reply_to_msg_id BIGINT
-                )
-            """)
+            # Check if messages table has group_id — if not, drop all and recreate
+            try:
+                col = await conn.fetchval("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name='messages' AND column_name='group_id'
+                """)
+                if col is None:
+                    logger.warning("messages table missing group_id — dropping all tables.")
+                    await conn.execute("DROP TABLE IF EXISTS messages CASCADE")
+                    await conn.execute("DROP TABLE IF EXISTS user_profiles CASCADE")
+                    await conn.execute("DROP TABLE IF EXISTS bot_state CASCADE")
+                    await conn.execute("DROP TABLE IF EXISTS groups CASCADE")
+            except Exception as e:
+                logger.warning(f"Schema check skipped: {e}")
 
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_profiles (
-                    user_id BIGINT NOT NULL,
-                    group_id BIGINT NOT NULL,
-                    user_name TEXT,
-                    relationship_notes TEXT DEFAULT '',
-                    interaction_count INTEGER DEFAULT 0,
-                    tone_preference TEXT DEFAULT 'neutral',
-                    last_interaction TIMESTAMPTZ,
-                    personality_tags JSONB DEFAULT '[]'::jsonb,
-                    PRIMARY KEY (user_id, group_id)
-                )
-            """)
+            # groups
+            try:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS groups (
+                        group_id BIGINT PRIMARY KEY,
+                        group_name TEXT,
+                        initialized BOOLEAN DEFAULT FALSE,
+                        init_timestamp TIMESTAMPTZ,
+                        last_activity TIMESTAMPTZ DEFAULT NOW(),
+                        message_count INTEGER DEFAULT 0
+                    )
+                """)
+                logger.info("Table 'groups' OK.")
+            except Exception as e:
+                logger.error(f"groups table error: {e}")
+                raise
 
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS bot_state (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at TIMESTAMPTZ DEFAULT NOW()
-                )
-            """)
+            # messages — NO foreign key constraint
+            try:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id BIGSERIAL PRIMARY KEY,
+                        group_id BIGINT NOT NULL,
+                        user_id BIGINT NOT NULL,
+                        user_name TEXT,
+                        text TEXT,
+                        timestamp TIMESTAMPTZ NOT NULL,
+                        is_self BOOLEAN DEFAULT FALSE,
+                        reply_to_msg_id BIGINT
+                    )
+                """)
+                logger.info("Table 'messages' OK.")
+            except Exception as e:
+                logger.error(f"messages table error: {e}")
+                raise
 
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_messages_group_time
-                ON messages(group_id, timestamp DESC)
-            """)
+            # user_profiles
+            try:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS user_profiles (
+                        user_id BIGINT NOT NULL,
+                        group_id BIGINT NOT NULL,
+                        user_name TEXT,
+                        relationship_notes TEXT DEFAULT '',
+                        interaction_count INTEGER DEFAULT 0,
+                        tone_preference TEXT DEFAULT 'neutral',
+                        last_interaction TIMESTAMPTZ,
+                        personality_tags JSONB DEFAULT '[]'::jsonb,
+                        PRIMARY KEY (user_id, group_id)
+                    )
+                """)
+                logger.info("Table 'user_profiles' OK.")
+            except Exception as e:
+                logger.error(f"user_profiles table error: {e}")
+                raise
 
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_messages_group_user
-                ON messages(group_id, user_id)
-            """)
+            # bot_state
+            try:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS bot_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT,
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """)
+                logger.info("Table 'bot_state' OK.")
+            except Exception as e:
+                logger.error(f"bot_state table error: {e}")
+                raise
+
+            # Indexes — skip if fail
+            for idx_sql in [
+                "CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages(group_id, timestamp DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_messages_group_user ON messages(group_id, user_id)",
+            ]:
+                try:
+                    await conn.execute(idx_sql)
+                except Exception as e:
+                    logger.warning(f"Index skipped: {e}")
 
             logger.info("All database tables created/verified successfully.")
 
