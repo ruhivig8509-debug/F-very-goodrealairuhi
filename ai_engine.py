@@ -4,6 +4,7 @@ AI Engine module for Ruhi UserBot.
 
 import logging
 import asyncio
+import time
 from typing import Optional
 from openai import OpenAI
 
@@ -18,25 +19,34 @@ client = OpenAI(
 
 
 def _call_llm_sync(system_prompt: str, user_message: str, max_tokens: int = 300) -> str:
-    try:
-        completion = client.chat.completions.create(
-            model=config.AI_MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=max_tokens,
-            temperature=0.85,
-            top_p=0.9,
-        )
-        return completion.choices[0].message.content.strip()
-    except Exception as e:
-        logger.error(f"LLM API call failed: {e}")
-        return "NO_REPLY"
+    """Synchronous LLM call with retry on rate limit."""
+    for attempt in range(3):
+        try:
+            completion = client.chat.completions.create(
+                model=config.AI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message},
+                ],
+                max_tokens=max_tokens,
+                temperature=0.85,
+                top_p=0.9,
+            )
+            return completion.choices[0].message.content.strip()
+        except Exception as e:
+            err = str(e).lower()
+            if "rate limit" in err or "429" in err or "too many" in err:
+                wait = (attempt + 1) * 10
+                logger.warning(f"Rate limit hit, waiting {wait}s (attempt {attempt+1}/3)")
+                time.sleep(wait)
+            else:
+                logger.error(f"LLM API call failed: {e}")
+                return "NO_REPLY"
+    logger.error("LLM failed after 3 retries — rate limit")
+    return "NO_REPLY"
 
 
 async def call_llm(system_prompt: str, user_message: str, max_tokens: int = 300) -> str:
-    # Python 3.14 fix: get_running_loop() instead of get_event_loop()
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(None, _call_llm_sync, system_prompt, user_message, max_tokens)
     return result
@@ -100,7 +110,7 @@ async def decide_and_generate_reply(
     response = await call_llm(
         system_prompt=config.USER_PERSONALITY_PROMPT,
         user_message=user_prompt,
-        max_tokens=350,
+        max_tokens=300,
     )
 
     if not response or response.strip().upper() == "NO_REPLY":
@@ -142,12 +152,11 @@ async def generate_ignore_reaction(
     response = await call_llm(
         system_prompt=config.USER_PERSONALITY_PROMPT,
         user_message=user_prompt,
-        max_tokens=200,
+        max_tokens=150,
     )
 
     if not response or response.strip().upper() == "NO_REPLY":
         return None
-
     return response.strip()
 
 
@@ -166,4 +175,4 @@ async def generate_relationship_update(
     Recent exchanges:
     {recent_exchanges}"""
 
-    return await call_llm(system, user_msg, max_tokens=100)
+    return await call_llm(system, user_msg, max_tokens=80)
