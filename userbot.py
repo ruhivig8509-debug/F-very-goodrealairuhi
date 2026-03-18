@@ -5,7 +5,7 @@ Core UserBot module - Telegram event handling, message processing, and human mim
 import asyncio
 import random
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 
 from telethon import TelegramClient, events
@@ -14,11 +14,7 @@ from telethon.tl.functions.messages import SetTypingRequest, ReadHistoryRequest
 from telethon.tl.types import (
     SendMessageTypingAction,
     SendMessageCancelAction,
-    Channel,
-    Chat,
     User,
-    PeerChannel,
-    PeerChat,
 )
 
 import config
@@ -82,10 +78,12 @@ class RuhiUserBot:
     # --- Initialization ---
 
     async def _initialize_all_groups(self):
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
         try:
-            dialogs = await self.client.get_dialogs(limit=None)
+            # limit=15 to avoid RAM spike on 512MB Render free tier
+            dialogs = await self.client.get_dialogs(limit=config.MAX_DIALOGS)
             groups = [d for d in dialogs if d.is_group or d.is_channel]
+
             logger.info(f"Found {len(groups)} groups/channels to check.")
 
             for dialog in groups:
@@ -94,15 +92,17 @@ class RuhiUserBot:
                 try:
                     await db.register_group(group_id, group_name)
                     if not await db.is_group_initialized(group_id):
-                        logger.info(f"Initializing group: {group_name} ({group_id})")
+                        logger.info(f"Initializing group: {group_name}")
                         await self._scrape_group_history(dialog.entity, group_id, group_name)
                     else:
-                        logger.info(f"Group already initialized: {group_name}")
+                        logger.info(f"Already initialized: {group_name}")
                 except Exception as e:
-                    logger.error(f"Error initializing group {group_name}: {e}")
-                await asyncio.sleep(1)
+                    logger.error(f"Error initializing {group_name}: {e}")
 
-            logger.info("All groups initialization check complete.")
+                # Small delay between groups to avoid memory spike
+                await asyncio.sleep(2)
+
+            logger.info("All groups initialization complete.")
         except Exception as e:
             logger.error(f"Error during group initialization: {e}")
 
@@ -113,6 +113,7 @@ class RuhiUserBot:
         try:
             messages_data = []
             count = 0
+
             async for message in self.client.iter_messages(entity, limit=config.INIT_MESSAGE_COUNT):
                 if message.text:
                     sender_name = "Unknown"
@@ -132,18 +133,24 @@ class RuhiUserBot:
                         timestamp = timestamp.replace(tzinfo=timezone.utc)
                     messages_data.append((
                         group_id, sender_id, sender_name,
-                        message.text[:4000], timestamp, is_self,
+                        message.text[:1000],  # truncate more aggressively
+                        timestamp, is_self,
                         message.reply_to_msg_id if message.reply_to else None,
                     ))
                     count += 1
-                if count % 100 == 0:
-                    await asyncio.sleep(0.5)
 
+                # Flush to DB every 20 messages to keep memory low
+                if len(messages_data) >= 20:
+                    await db.store_messages_bulk(messages_data)
+                    messages_data = []
+                    await asyncio.sleep(0.3)
+
+            # Flush remaining
             if messages_data:
                 await db.store_messages_bulk(messages_data)
-                logger.info(f"Stored {len(messages_data)} messages from {group_name}")
+
             await db.mark_group_initialized(group_id, group_name)
-            logger.info(f"Group {group_name} fully initialized with {count} messages.")
+            logger.info(f"Group {group_name} initialized with {count} messages.")
         except Exception as e:
             logger.error(f"Error scraping {group_name}: {e}")
         finally:
@@ -193,7 +200,7 @@ class RuhiUserBot:
                 group_id=group_id,
                 user_id=sender_id,
                 user_name=sender_name,
-                text=message.text[:4000],
+                text=message.text[:1000],
                 timestamp=timestamp,
                 is_self=is_self,
                 reply_to_msg_id=message.reply_to_msg_id if message.reply_to else None,
@@ -217,68 +224,71 @@ class RuhiUserBot:
         self, event, group_id: int, group_name: str,
         sender_id: int, sender_name: str, message_text: str
     ):
-        directly_addressed = self._is_directly_addressed(message_text)
+        try:
+            directly_addressed = self._is_directly_addressed(message_text)
 
-        replying_to_self = False
-        if event.message.reply_to:
-            try:
-                replied_msg = await event.message.get_reply_message()
-                if replied_msg and replied_msg.sender_id == self.my_id:
-                    replying_to_self = True
-            except Exception:
-                pass
+            replying_to_self = False
+            if event.message.reply_to:
+                try:
+                    replied_msg = await event.message.get_reply_message()
+                    if replied_msg and replied_msg.sender_id == self.my_id:
+                        replying_to_self = True
+                except Exception:
+                    pass
 
-        ignore_detected = await self._check_if_ignored(group_id)
-        recent_messages = await db.get_recent_messages(group_id, config.CONTEXT_WINDOW_SIZE)
-        user_summary = await db.get_user_interaction_summary(sender_id, group_id)
+            ignore_detected = await self._check_if_ignored(group_id)
+            recent_messages = await db.get_recent_messages(group_id, config.CONTEXT_WINDOW_SIZE)
+            user_summary = await db.get_user_interaction_summary(sender_id, group_id)
 
-        if directly_addressed or replying_to_self:
-            logger.info(f"Directly addressed by {sender_name} in {group_name}")
+            if directly_addressed or replying_to_self:
+                logger.info(f"Directly addressed by {sender_name} in {group_name}")
 
-        reply = await ai_engine.decide_and_generate_reply(
-            group_name=group_name,
-            recent_messages=recent_messages,
-            current_speaker=sender_name,
-            current_message=message_text,
-            user_profile_summary=user_summary,
-            ignore_detected=ignore_detected,
-            self_name=self.my_name,
-        )
-
-        if reply:
-            await self._simulate_human_behavior(event, reply, group_id)
-            await event.reply(reply)
-
-            now = datetime.now(timezone.utc)
-            await db.store_message(
-                group_id=group_id,
-                user_id=self.my_id,
-                user_name=self.my_name,
-                text=reply,
-                timestamp=now,
-                is_self=True,
+            reply = await ai_engine.decide_and_generate_reply(
+                group_name=group_name,
+                recent_messages=recent_messages,
+                current_speaker=sender_name,
+                current_message=message_text,
+                user_profile_summary=user_summary,
+                ignore_detected=ignore_detected,
+                self_name=self.my_name,
             )
 
-            await db.update_user_profile(
-                user_id=sender_id,
-                group_id=group_id,
-                user_name=sender_name,
-            )
+            if reply:
+                await self._simulate_human_behavior(event, reply, group_id)
+                await event.reply(reply)
 
-            profile = await db.get_user_profile(sender_id, group_id)
-            if profile and profile["interaction_count"] % 10 == 0:
-                asyncio.create_task(
-                    self._update_relationship_notes(sender_id, group_id, sender_name)
+                now = datetime.now(timezone.utc)
+                await db.store_message(
+                    group_id=group_id,
+                    user_id=self.my_id,
+                    user_name=self.my_name,
+                    text=reply,
+                    timestamp=now,
+                    is_self=True,
                 )
 
-            logger.info(f"Replied to {sender_name} in {group_name}: {reply[:60]}...")
+                await db.update_user_profile(
+                    user_id=sender_id,
+                    group_id=group_id,
+                    user_name=sender_name,
+                )
+
+                profile = await db.get_user_profile(sender_id, group_id)
+                if profile and profile["interaction_count"] % 10 == 0:
+                    asyncio.create_task(
+                        self._update_relationship_notes(sender_id, group_id, sender_name)
+                    )
+
+                logger.info(f"Replied to {sender_name} in {group_name}: {reply[:60]}...")
+
+        except Exception as e:
+            logger.error(f"Error in process_and_maybe_reply: {e}", exc_info=True)
 
     def _is_directly_addressed(self, text: str) -> bool:
         text_lower = text.lower()
         triggers = [
             "ruhi", "रूही", "roohi", "zoya",
             "@ruhi", "ruhi?", "ruhi!", "ruhi,",
-            "ruhi bhai", "ruhi di", "ruhi sis",
         ]
         for trigger in triggers:
             if trigger in text_lower:
@@ -290,25 +300,19 @@ class RuhiUserBot:
             last_self_time = await db.get_last_self_message_time(group_id)
             if not last_self_time:
                 return False
-
             now = datetime.now(timezone.utc)
             if last_self_time.tzinfo is None:
                 last_self_time = last_self_time.replace(tzinfo=timezone.utc)
-
             time_since = (now - last_self_time).total_seconds()
-
             if time_since < 30 or time_since > config.IGNORE_THRESHOLD_SECONDS:
                 return False
-
             messages_after = await db.get_messages_after_self(group_id, config.IGNORE_CHECK_MESSAGES)
-
             if len(messages_after) >= 4:
                 any_addressed = any(
                     self._is_directly_addressed(msg["text"] or "") for msg in messages_after
                 )
                 if not any_addressed:
                     return True
-
             return False
         except Exception as e:
             logger.error(f"Error checking ignore status: {e}")
@@ -319,51 +323,40 @@ class RuhiUserBot:
     async def _simulate_human_behavior(self, event, reply_text: str, group_id: int):
         try:
             chat = await event.get_chat()
-
             read_delay = random.uniform(config.MIN_REPLY_DELAY, config.MAX_REPLY_DELAY)
             await asyncio.sleep(read_delay)
 
             try:
-                await self.client(ReadHistoryRequest(
-                    peer=chat,
-                    max_id=event.message.id
-                ))
+                await self.client(ReadHistoryRequest(peer=chat, max_id=event.message.id))
             except Exception:
                 pass
 
             await asyncio.sleep(random.uniform(0.3, 1.0))
 
             typing_duration = len(reply_text) / config.TYPING_SPEED_CPS
-            typing_duration = max(1.0, min(typing_duration, 15.0))
-            typing_duration *= random.uniform(0.8, 1.3)
+            typing_duration = max(1.0, min(typing_duration, 10.0))
+            typing_duration *= random.uniform(0.8, 1.2)
 
             try:
-                await self.client(SetTypingRequest(
-                    peer=chat,
-                    action=SendMessageTypingAction()
-                ))
+                await self.client(SetTypingRequest(peer=chat, action=SendMessageTypingAction()))
             except Exception:
                 pass
 
             await asyncio.sleep(typing_duration)
 
             try:
-                await self.client(SetTypingRequest(
-                    peer=chat,
-                    action=SendMessageCancelAction()
-                ))
+                await self.client(SetTypingRequest(peer=chat, action=SendMessageCancelAction()))
             except Exception:
                 pass
 
         except Exception as e:
             logger.error(f"Error in human behavior simulation: {e}")
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+            await asyncio.sleep(2.0)
 
     # --- Background Tasks ---
 
     async def _ignore_detection_loop(self):
         await asyncio.sleep(60)
-
         while self._running:
             try:
                 pool = await db.get_pool()
@@ -377,36 +370,25 @@ class RuhiUserBot:
                 for group in groups:
                     group_id = group["group_id"]
                     group_name = group["group_name"]
-
                     last_reaction = self._ignore_cooldowns.get(group_id, 0)
                     now_ts = datetime.now(timezone.utc).timestamp()
                     if now_ts - last_reaction < 600:
                         continue
-
                     if await self._check_if_ignored(group_id):
                         logger.info(f"Detected being ignored in {group_name}")
-
-                        recent_messages = await db.get_recent_messages(group_id, 20)
-
+                        recent_messages = await db.get_recent_messages(group_id, 15)
                         reaction = await ai_engine.generate_ignore_reaction(
                             group_name=group_name,
                             recent_messages=recent_messages,
                             self_name=self.my_name,
                         )
-
                         if reaction:
                             try:
                                 entity = await self.client.get_entity(group_id)
-                                typing_time = len(reaction) / config.TYPING_SPEED_CPS
-                                typing_time = max(1.0, min(typing_time, 10.0))
-
-                                await self.client(SetTypingRequest(
-                                    peer=entity,
-                                    action=SendMessageTypingAction()
-                                ))
+                                typing_time = max(1.0, min(len(reaction) / config.TYPING_SPEED_CPS, 8.0))
+                                await self.client(SetTypingRequest(peer=entity, action=SendMessageTypingAction()))
                                 await asyncio.sleep(typing_time)
                                 await self.client.send_message(entity, reaction)
-
                                 await db.store_message(
                                     group_id=group_id,
                                     user_id=self.my_id,
@@ -415,13 +397,9 @@ class RuhiUserBot:
                                     timestamp=datetime.now(timezone.utc),
                                     is_self=True,
                                 )
-
                                 self._ignore_cooldowns[group_id] = now_ts
-                                logger.info(f"Sent ignore reaction in {group_name}: {reaction[:60]}...")
-
                             except Exception as e:
                                 logger.error(f"Error sending ignore reaction: {e}")
-
             except Exception as e:
                 logger.error(f"Error in ignore detection loop: {e}")
 
@@ -429,20 +407,16 @@ class RuhiUserBot:
 
     async def _periodic_prune(self):
         await asyncio.sleep(300)
-
         while self._running:
             try:
                 pool = await db.get_pool()
                 async with pool.acquire() as conn:
                     groups = await conn.fetch("SELECT group_id FROM groups WHERE initialized = TRUE")
-
                 for group in groups:
                     await db.prune_old_messages(group["group_id"], config.MAX_STORED_MESSAGES)
                     await asyncio.sleep(1)
-
             except Exception as e:
                 logger.error(f"Error in periodic prune: {e}")
-
             await asyncio.sleep(3600)
 
     async def _update_relationship_notes(self, user_id: int, group_id: int, user_name: str):
@@ -453,7 +427,7 @@ class RuhiUserBot:
                     SELECT user_name, text, is_self FROM messages
                     WHERE group_id = $1 AND (user_id = $2 OR is_self = TRUE)
                     ORDER BY timestamp DESC
-                    LIMIT 20
+                    LIMIT 10
                 """, group_id, user_id)
 
             if len(rows) < 4:
@@ -479,11 +453,9 @@ class RuhiUserBot:
                     if "TONE:" in notes_part:
                         notes = notes_part.split("TONE:")[0].strip().strip("|").strip()
                         tone = notes_part.split("TONE:")[1].strip().lower()
-
                         valid_tones = ["friendly", "sarcastic", "cold", "playful", "respectful", "annoyed"]
                         if tone not in valid_tones:
                             tone = "neutral"
-
                         await db.update_user_profile(
                             user_id=user_id,
                             group_id=group_id,
@@ -491,10 +463,8 @@ class RuhiUserBot:
                             relationship_notes=notes,
                             tone_preference=tone,
                         )
-                        logger.info(f"Updated relationship notes for {user_name}: {notes[:50]}...")
                 except Exception as e:
                     logger.error(f"Error parsing relationship update: {e}")
-
         except Exception as e:
             logger.error(f"Error updating relationship notes: {e}")
 

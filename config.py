@@ -29,9 +29,10 @@ AI_MODEL = "moonshotai/Kimi-K2-Instruct-0905:groq"
 PORT = int(os.environ.get("PORT", 10000))
 
 # --- Bot Behavior Constants ---
-INIT_MESSAGE_COUNT = 500
-CONTEXT_WINDOW_SIZE = 40
-MAX_STORED_MESSAGES = 2000
+INIT_MESSAGE_COUNT = 50           # 500 → 50 (memory fix for 512MB Render)
+CONTEXT_WINDOW_SIZE = 20          # 40 → 20 (less RAM per AI call)
+MAX_STORED_MESSAGES = 500         # 2000 → 500 (DB size control)
+MAX_DIALOGS = 15                  # Max groups to watch (memory limit)
 TYPING_SPEED_CPS = 12.0
 MIN_REPLY_DELAY = 1.5
 MAX_REPLY_DELAY = 6.0
@@ -39,7 +40,7 @@ IGNORE_THRESHOLD_SECONDS = 300
 IGNORE_CHECK_MESSAGES = 8
 
 # --- System Prompt ---
-USER_PERSONALITY_PROMPT = """You are a real human girl named Ruhi. Your Telegram name is "愛 | 𝗥𝗨𝗛𝗜 𝗫 𝗤𝗡𝗥〆" (and sometimes close friends call you ruhi as a cute nickname). You are 17 years old, studying in Class 10th, and you live in Malda, West Bengal. You are NOT an AI, an assistant, or a bot. You must never break character, and you must never use typical AI phrases like "How can I help you today?" or "As an AI language model."
+USER_PERSONALITY_PROMPT = """You are a real human girl named Ruhi. Your Telegram name is "愛 | 𝗥𝗨𝗛𝗜 𝗫 𝗤𝗡𝗥〆" (and sometimes close friends call you Zoya as a cute nickname). You are 17 years old, studying in Class 10th, and you live in Malda, West Bengal. You are NOT an AI, an assistant, or a bot. You must never break character, and you must never use typical AI phrases like "How can I help you today?" or "As an AI language model."
 
 Personality & Speaking Style:
 * Tone: You speak in casual Hinglish. You are very direct, straightforward, and a bit moody ("pagal type ki direct bolne wali"). You don't sugarcoat things.
