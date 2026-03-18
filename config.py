@@ -28,7 +28,7 @@ GROQ_API_KEYS = [
     if k.startswith("GROQ_API_KEY") and v.strip()
 ]
 AI_BASE_URL = "https://api.groq.com/openai/v1"
-AI_MODEL = "llama-3.3-70b-versatile"
+AI_MODEL = "moonshotai/kimi-k2-instruct-0905"
 
 # --- Web Server ---
 PORT = int(os.environ.get("PORT", 10000))
