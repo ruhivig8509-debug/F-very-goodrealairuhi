@@ -34,13 +34,13 @@ AI_MODEL = "llama-3.3-70b-versatile"
 PORT = int(os.environ.get("PORT", 10000))
 
 # --- Bot Behavior Constants ---
-INIT_MESSAGE_COUNT = 50           # 500 → 50 (memory fix for 512MB Render)
+INIT_MESSAGE_COUNT = 40           # 500 → 50 (memory fix for 512MB Render)
 CONTEXT_WINDOW_SIZE = 20          # 40 → 20 (less RAM per AI call)
-MAX_STORED_MESSAGES = 500         # 2000 → 500 (DB size control)
+MAX_STORED_MESSAGES = 150         # 2000 → 500 (DB size control)
 MAX_DIALOGS = 15                  # Max groups to watch (memory limit)
 TYPING_SPEED_CPS = 12.0
-MIN_REPLY_DELAY = 1.5
-MAX_REPLY_DELAY = 6.0
+MIN_REPLY_DELAY = 3.5
+MAX_REPLY_DELAY = 9.0
 IGNORE_THRESHOLD_SECONDS = 300
 IGNORE_CHECK_MESSAGES = 8
 
