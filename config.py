@@ -20,10 +20,15 @@ DATABASE_URL = os.environ.get(
 ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 RAW_DATABASE_URL = DATABASE_URL
 
-# --- AI / HuggingFace ---
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-AI_BASE_URL = "https://router.huggingface.co/v1"
-AI_MODEL = "moonshotai/Kimi-K2-Instruct-0905:groq"
+# --- AI / Groq ---
+# Auto-loads all GROQ_API_KEY1, GROQ_API_KEY2, ... GROQ_API_KEY999
+# Add as many keys as you want in environment variables
+GROQ_API_KEYS = [
+    v for k, v in sorted(os.environ.items())
+    if k.startswith("GROQ_API_KEY") and v.strip()
+]
+AI_BASE_URL = "https://api.groq.com/openai/v1"
+AI_MODEL = "llama-3.3-70b-versatile"
 
 # --- Web Server ---
 PORT = int(os.environ.get("PORT", 10000))

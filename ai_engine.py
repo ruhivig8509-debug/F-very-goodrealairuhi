@@ -12,15 +12,33 @@ import config
 
 logger = logging.getLogger("ruhi.ai")
 
-client = OpenAI(
-    base_url=config.AI_BASE_URL,
-    api_key=config.HF_TOKEN,
-)
+# Build one client per Groq API key
+_clients = [
+    OpenAI(base_url=config.AI_BASE_URL, api_key=key)
+    for key in config.GROQ_API_KEYS
+]
+
+if not _clients:
+    raise RuntimeError("No GROQ_API_KEY found in environment. Set GROQ_API_KEY1 / GROQ_API_KEY2 / GROQ_API_KEY3.")
+
+# Round-robin index (shared across calls)
+_key_index = 0
+
+
+def _get_next_client() -> tuple:
+    """Return next client in round-robin order."""
+    global _key_index
+    idx = _key_index % len(_clients)
+    _key_index = (idx + 1) % len(_clients)
+    return _clients[idx], idx
 
 
 def _call_llm_sync(system_prompt: str, user_message: str, max_tokens: int = 300) -> str:
-    """Synchronous LLM call with retry on rate limit."""
-    for attempt in range(3):
+    """Synchronous LLM call. Rotates keys on rate-limit, tries all keys before giving up."""
+    num_keys = len(_clients)
+    # Try each key up to 2 times (for transient errors)
+    for attempt in range(num_keys * 2):
+        client, idx = _get_next_client()
         try:
             completion = client.chat.completions.create(
                 model=config.AI_MODEL,
@@ -36,13 +54,14 @@ def _call_llm_sync(system_prompt: str, user_message: str, max_tokens: int = 300)
         except Exception as e:
             err = str(e).lower()
             if "rate limit" in err or "429" in err or "too many" in err:
-                wait = (attempt + 1) * 10
-                logger.warning(f"Rate limit hit, waiting {wait}s (attempt {attempt+1}/3)")
-                time.sleep(wait)
+                logger.warning(f"Rate limit on key #{idx + 1}, rotating to next key (attempt {attempt + 1})")
+                time.sleep(2)  # short pause before trying next key
+                continue
             else:
-                logger.error(f"LLM API call failed: {e}")
+                logger.error(f"LLM API call failed (key #{idx + 1}): {e}")
                 return "NO_REPLY"
-    logger.error("LLM failed after 3 retries — rate limit")
+
+    logger.error("All Groq API keys exhausted or rate-limited. Giving up.")
     return "NO_REPLY"
 
 
