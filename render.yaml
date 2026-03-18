@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: ruhi-userbot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: SESSION_STRING
+        sync: false
+      - key: HF_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        value: postgresql://neondb_owner:npg_jYrNzuqFA0i8@ep-small-bread-a10zu157-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+      - key: PORT
+        value: "10000"
+    healthCheckPath: /health
+    plan: free
