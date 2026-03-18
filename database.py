@@ -28,7 +28,7 @@ async def init_db():
         logger.info("Database connection pool created successfully.")
 
         async with _pool.acquire() as conn:
-            # All tables in ONE execute so foreign key dependencies resolve correctly
+            # Each table in its own execute — asyncpg + Neon multi-statement issue fix
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS groups (
                     group_id BIGINT PRIMARY KEY,
@@ -37,21 +37,23 @@ async def init_db():
                     init_timestamp TIMESTAMPTZ,
                     last_activity TIMESTAMPTZ DEFAULT NOW(),
                     message_count INTEGER DEFAULT 0
-                );
+                )
+            """)
 
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id BIGSERIAL PRIMARY KEY,
-                    group_id BIGINT NOT NULL,
+                    group_id BIGINT NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
                     user_id BIGINT NOT NULL,
                     user_name TEXT,
                     text TEXT,
                     timestamp TIMESTAMPTZ NOT NULL,
                     is_self BOOLEAN DEFAULT FALSE,
-                    reply_to_msg_id BIGINT,
-                    CONSTRAINT fk_group FOREIGN KEY (group_id)
-                        REFERENCES groups(group_id) ON DELETE CASCADE
-                );
+                    reply_to_msg_id BIGINT
+                )
+            """)
 
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_profiles (
                     user_id BIGINT NOT NULL,
                     group_id BIGINT NOT NULL,
@@ -62,23 +64,25 @@ async def init_db():
                     last_interaction TIMESTAMPTZ,
                     personality_tags JSONB DEFAULT '[]'::jsonb,
                     PRIMARY KEY (user_id, group_id)
-                );
+                )
+            """)
 
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS bot_state (
                     key TEXT PRIMARY KEY,
                     value TEXT,
                     updated_at TIMESTAMPTZ DEFAULT NOW()
-                );
+                )
             """)
 
-            # Indexes after tables are committed
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_messages_group_time
-                ON messages(group_id, timestamp DESC);
+                ON messages(group_id, timestamp DESC)
             """)
+
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_messages_group_user
-                ON messages(group_id, user_id);
+                ON messages(group_id, user_id)
             """)
 
             logger.info("All database tables created/verified successfully.")
@@ -101,8 +105,6 @@ async def get_pool() -> asyncpg.Pool:
         await init_db()
     return _pool
 
-
-# --- Group Operations ---
 
 async def is_group_initialized(group_id: int) -> bool:
     pool = await get_pool()
@@ -137,8 +139,6 @@ async def register_group(group_id: int, group_name: str):
                 last_activity = NOW()
         """, group_id, group_name)
 
-
-# --- Message Operations ---
 
 async def store_message(
     group_id: int,
@@ -239,8 +239,6 @@ async def prune_old_messages(group_id: int, keep_count: int = 2000):
             logger.info(f"Pruned {count - keep_count} old messages from group {group_id}")
 
 
-# --- User Profile Operations ---
-
 async def get_user_profile(user_id: int, group_id: int) -> Optional[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -317,8 +315,6 @@ async def get_user_interaction_summary(user_id: int, group_id: int) -> str:
             summary_parts.append(f"Tags: {', '.join(tags)}")
     return " | ".join(summary_parts)
 
-
-# --- Bot State Operations ---
 
 async def get_bot_state(key: str) -> Optional[str]:
     pool = await get_pool()
