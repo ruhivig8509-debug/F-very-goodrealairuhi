@@ -1,0 +1,19 @@
+{
+  "name": "ruhi-puter-bridge",
+  "version": "1.0.0",
+  "description": "Node.js microservice bridging Ruhi UserBot Python code to Puter.js AI (keyless Llama-3.3-70b)",
+  "main": "puter_server.js",
+  "scripts": {
+    "start": "node puter_server.js",
+    "dev": "node puter_server.js"
+  },
+  "dependencies": {
+    "@puter/puter.js": "latest",
+    "express": "^4.21.2",
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

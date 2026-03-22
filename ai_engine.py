@@ -1,74 +1,68 @@
 """
 AI Engine module for Ruhi UserBot.
+
+All LLM calls are now routed to the local Puter.js microservice (puter_server.js),
+which provides keyless, unlimited access to Llama-3.3-70b via Puter.js.
+Groq API / OpenAI client have been removed entirely.
 """
 
 import logging
 import asyncio
-import time
 from typing import Optional
-from openai import OpenAI
+
+import aiohttp
 
 import config
 
 logger = logging.getLogger("ruhi.ai")
 
-# Build one client per Groq API key
-_clients = [
-    OpenAI(base_url=config.AI_BASE_URL, api_key=key)
-    for key in config.GROQ_API_KEYS
-]
 
-if not _clients:
-    raise RuntimeError("No GROQ_API_KEY found in environment. Set GROQ_API_KEY1 / GROQ_API_KEY2 / GROQ_API_KEY3.")
+async def call_llm(
+    system_prompt: str,
+    user_message: str,
+    max_tokens: int = 300,
+) -> str:
+    """
+    Send a prompt to the local Puter.js microservice and return the AI reply.
+    Returns "NO_REPLY" on any error so callers can handle it gracefully.
+    """
+    payload = {
+        "system_prompt": system_prompt,
+        "user_message": user_message,
+        "max_tokens": max_tokens,
+    }
 
-# Round-robin index (shared across calls)
-_key_index = 0
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                config.PUTER_LOCAL_URL,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.error(
+                        f"Puter microservice returned HTTP {resp.status}: {body[:200]}"
+                    )
+                    return "NO_REPLY"
 
+                data = await resp.json()
+                reply = data.get("reply", "NO_REPLY")
+                return reply if reply else "NO_REPLY"
 
-def _get_next_client() -> tuple:
-    """Return next client in round-robin order."""
-    global _key_index
-    idx = _key_index % len(_clients)
-    _key_index = (idx + 1) % len(_clients)
-    return _clients[idx], idx
-
-
-def _call_llm_sync(system_prompt: str, user_message: str, max_tokens: int = 300) -> str:
-    """Synchronous LLM call. Rotates keys on rate-limit, tries all keys before giving up."""
-    num_keys = len(_clients)
-    # Try each key up to 2 times (for transient errors)
-    for attempt in range(num_keys * 2):
-        client, idx = _get_next_client()
-        try:
-            completion = client.chat.completions.create(
-                model=config.AI_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-                max_tokens=max_tokens,
-                temperature=0.85,
-                top_p=0.9,
-            )
-            return completion.choices[0].message.content.strip()
-        except Exception as e:
-            err = str(e).lower()
-            if "rate limit" in err or "429" in err or "too many" in err:
-                logger.warning(f"Rate limit on key #{idx + 1}, rotating to next key (attempt {attempt + 1})")
-                time.sleep(2)  # short pause before trying next key
-                continue
-            else:
-                logger.error(f"LLM API call failed (key #{idx + 1}): {e}")
-                return "NO_REPLY"
-
-    logger.error("All Groq API keys exhausted or rate-limited. Giving up.")
-    return "NO_REPLY"
-
-
-async def call_llm(system_prompt: str, user_message: str, max_tokens: int = 300) -> str:
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, _call_llm_sync, system_prompt, user_message, max_tokens)
-    return result
+    except aiohttp.ClientConnectorError:
+        logger.error(
+            "Cannot connect to Puter microservice at %s. "
+            "Make sure puter_server.js is running.",
+            config.PUTER_LOCAL_URL,
+        )
+        return "NO_REPLY"
+    except asyncio.TimeoutError:
+        logger.error("Puter microservice timed out after 60 s.")
+        return "NO_REPLY"
+    except Exception as exc:
+        logger.error("Unexpected error calling Puter microservice: %s", exc)
+        return "NO_REPLY"
 
 
 def build_context_prompt(
@@ -79,7 +73,7 @@ def build_context_prompt(
     user_profile_summary: str,
     is_decide_mode: bool = True,
     ignore_detected: bool = False,
-    self_name: str = "Ruhi"
+    self_name: str = "Ruhi",
 ) -> str:
     history_lines = []
     for msg in recent_messages:
@@ -90,7 +84,11 @@ def build_context_prompt(
         if text:
             history_lines.append(f"[{name}]: {text}")
 
-    history_str = "\n".join(history_lines[-config.CONTEXT_WINDOW_SIZE:]) if history_lines else "(No recent history)"
+    history_str = (
+        "\n".join(history_lines[-config.CONTEXT_WINDOW_SIZE:])
+        if history_lines
+        else "(No recent history)"
+    )
 
     parts = []
     if is_decide_mode:
@@ -100,7 +98,9 @@ def build_context_prompt(
     if user_profile_summary:
         parts.append(f"\n[Relationship with {current_speaker}]: {user_profile_summary}")
     if ignore_detected:
-        parts.append(f"\n[SYSTEM NOTE: You (Ruhi) spoke recently but everyone is ignoring you. React naturally.]")
+        parts.append(
+            "\n[SYSTEM NOTE: You (Ruhi) spoke recently but everyone is ignoring you. React naturally.]"
+        )
     parts.append(f"\n[Speaker: {current_speaker}]: {current_message}")
 
     return "\n".join(parts)
@@ -113,7 +113,7 @@ async def decide_and_generate_reply(
     current_message: str,
     user_profile_summary: str,
     ignore_detected: bool = False,
-    self_name: str = "Ruhi"
+    self_name: str = "Ruhi",
 ) -> Optional[str]:
     user_prompt = build_context_prompt(
         group_name=group_name,
@@ -141,8 +141,9 @@ async def decide_and_generate_reply(
         if response.lower().startswith(prefix.lower()):
             response = response[len(prefix):].strip()
 
-    if (response.startswith('"') and response.endswith('"')) or \
-       (response.startswith("'") and response.endswith("'")):
+    if (response.startswith('"') and response.endswith('"')) or (
+        response.startswith("'") and response.endswith("'")
+    ):
         response = response[1:-1].strip()
 
     if not response or response.upper() == "NO_REPLY":
@@ -155,7 +156,7 @@ async def decide_and_generate_reply(
 async def generate_ignore_reaction(
     group_name: str,
     recent_messages: list,
-    self_name: str = "Ruhi"
+    self_name: str = "Ruhi",
 ) -> Optional[str]:
     user_prompt = build_context_prompt(
         group_name=group_name,
@@ -182,16 +183,18 @@ async def generate_ignore_reaction(
 async def generate_relationship_update(
     user_name: str,
     recent_exchanges: str,
-    current_notes: str
+    current_notes: str,
 ) -> str:
-    system = """You are an internal note-taker. Based on recent chat exchanges, write a BRIEF (1-2 sentence) 
-    relationship note about how this person interacts with Ruhi. Note their tone, if they're friendly/rude/funny/flirty.
-    Also suggest a tone_preference from: friendly, sarcastic, cold, playful, respectful, annoyed.
-    Format: NOTES: <notes> | TONE: <tone>"""
+    system = (
+        "You are an internal note-taker. Based on recent chat exchanges, write a BRIEF (1-2 sentence) "
+        "relationship note about how this person interacts with Ruhi. Note their tone, if they're friendly/rude/funny/flirty.\n"
+        "Also suggest a tone_preference from: friendly, sarcastic, cold, playful, respectful, annoyed.\n"
+        "Format: NOTES: <notes> | TONE: <tone>"
+    )
 
     user_msg = f"""User: {user_name}
-    Previous notes: {current_notes or 'None'}
-    Recent exchanges:
-    {recent_exchanges}"""
+Previous notes: {current_notes or 'None'}
+Recent exchanges:
+{recent_exchanges}"""
 
     return await call_llm(system, user_msg, max_tokens=80)

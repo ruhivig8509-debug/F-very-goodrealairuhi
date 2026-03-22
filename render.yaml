@@ -1,9 +1,16 @@
 services:
   - type: web
     name: ruhi-userbot
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    runtime: node          # Render picks Node; we install Python inside buildCommand
+    buildCommand: >
+      npm install &&
+      pip install -r requirements.txt --break-system-packages
+    startCommand: >
+      npx concurrently
+        --names "PUTER,BOT"
+        --prefix-colors "cyan,green"
+        "node puter_server.js"
+        "python main.py"
     envVars:
       - key: API_ID
         sync: false
@@ -17,5 +24,7 @@ services:
         value: postgresql://neondb_owner:npg_jYrNzuqFA0i8@ep-small-bread-a10zu157-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
       - key: PORT
         value: "10000"
+      - key: PUTER_PORT
+        value: "3000"
     healthCheckPath: /health
     plan: free

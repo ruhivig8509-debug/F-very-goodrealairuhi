@@ -20,15 +20,10 @@ DATABASE_URL = os.environ.get(
 ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 RAW_DATABASE_URL = DATABASE_URL
 
-# --- AI / Groq ---
-# Auto-loads all GROQ_API_KEY1, GROQ_API_KEY2, ... GROQ_API_KEY999
-# Add as many keys as you want in environment variables
-GROQ_API_KEYS = [
-    v for k, v in sorted(os.environ.items())
-    if k.startswith("GROQ_API_KEY") and v.strip()
-]
-AI_BASE_URL = "https://api.groq.com/openai/v1"
-AI_MODEL = "llama-3.3-70b-versatile"
+# --- AI / Puter.js (keyless, no API keys required) ---
+# puter_server.js must be running before Python starts.
+# The start command in render.yaml handles this via concurrently.
+PUTER_LOCAL_URL = os.environ.get("PUTER_LOCAL_URL", "http://127.0.0.1:3000/chat")
 
 # --- Web Server ---
 PORT = int(os.environ.get("PORT", 10000))
